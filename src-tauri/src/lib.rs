@@ -1,4 +1,4 @@
-mod midea;
+pub mod midea;
 mod tray;
 
 use tauri::{Manager, WindowEvent};
