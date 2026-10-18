@@ -1,3 +1,4 @@
+mod midea;
 mod tray;
 
 use tauri::{Manager, WindowEvent};
