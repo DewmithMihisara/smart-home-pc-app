@@ -54,6 +54,11 @@ impl LanClient {
         first_state(&frames)
     }
 
+    /// Send a raw frame and return the raw response frames (diagnostics).
+    pub async fn raw(&mut self, frame: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.request(frame).await
+    }
+
     /// Ask the device what it supports (one or two 0xB5 round trips).
     pub async fn query_capabilities(&mut self) -> Result<Capabilities> {
         let mut caps = Capabilities { ieco_number: 1, ..Default::default() };
@@ -105,24 +110,38 @@ impl LanClient {
 
         let payload = packet::encode_packet(id, frame);
         let wire = if v3 { conn.codec.encode_data(&payload)? } else { payload };
+        let (want_type, want_id) = expected_reply(frame);
+        let is_reply = |f: &[u8]| f.len() > 10 && f[9] == want_type && f[10] == want_id;
 
-        // Discard anything unsolicited that arrived since the last request.
-        conn.pending.clear();
-        for attempt in 1..=RETRIES {
+        // The device also pushes unsolicited reports. Throw away anything that arrived
+        // since the last request, so an old report is never mistaken for this reply.
+        conn.discard_queued().await?;
+
+        for _ in 0..RETRIES {
             conn.stream.write_all(&wire).await?;
-            match conn.read_payload(v3, READ_TIMEOUT).await {
-                Ok(first) => {
-                    let mut frames = vec![packet::decode_packet(&first)?];
-                    // Pick up any additional responses that are already queued.
-                    while let Ok(p) = conn.read_payload(v3, Duration::from_millis(150)).await {
-                        if let Ok(f) = packet::decode_packet(&p) {
-                            frames.push(f);
+            let deadline = Instant::now() + READ_TIMEOUT;
+            loop {
+                let wait = deadline.saturating_duration_since(Instant::now());
+                let p = match conn.read_payload(v3, wait).await {
+                    Ok(p) => p,
+                    Err(Error::Timeout) => break,
+                    Err(e) => return Err(e),
+                };
+                let Ok(f) = packet::decode_packet(&p) else { continue };
+                if !is_reply(&f) {
+                    log::debug!("ignoring unsolicited frame {}", hex::encode(&f));
+                    continue;
+                }
+                let mut replies = vec![f];
+                // Pick up further replies already in flight (e.g. multi-part capabilities).
+                while let Ok(p) = conn.read_payload(v3, Duration::from_millis(150)).await {
+                    if let Ok(f) = packet::decode_packet(&p) {
+                        if is_reply(&f) {
+                            replies.push(f);
                         }
                     }
-                    return Ok(frames);
                 }
-                Err(Error::Timeout) if attempt < RETRIES => continue,
-                Err(e) => return Err(e),
+                return Ok(replies);
             }
         }
         Err(Error::Timeout)
@@ -177,6 +196,23 @@ impl Conn {
         Err(Error::Timeout)
     }
 
+    /// Drop buffered packets and any bytes already waiting on the socket.
+    async fn discard_queued(&mut self) -> Result<()> {
+        loop {
+            match self.fill(Instant::now() + Duration::from_millis(5)).await {
+                Ok(()) => continue,
+                Err(Error::Timeout) => break,
+                Err(e) => return Err(e),
+            }
+        }
+        if !self.buf.is_empty() || !self.pending.is_empty() {
+            log::debug!("discarded {} queued bytes and {} packets", self.buf.len(), self.pending.len());
+        }
+        self.buf.clear();
+        self.pending.clear();
+        Ok(())
+    }
+
     /// Read one inner (5A5A) payload.
     async fn read_payload(&mut self, v3: bool, wait: Duration) -> Result<Vec<u8>> {
         if v3 {
@@ -227,6 +263,16 @@ impl Conn {
         self.buf.extend_from_slice(&chunk[..n]);
         Ok(())
     }
+}
+
+/// The (frame type, response id) that answers a request. Replies echo the request's frame
+/// type (0x02 control, 0x03 query); unsolicited reports use 0x04/0x05 instead.
+fn expected_reply(request: &[u8]) -> (u8, u8) {
+    let id = match request[10] {
+        0x40 | 0x41 => 0xC0, // set / query state -> state
+        other => other,      // 0xB0, 0xB1, 0xB5 reply with the same id
+    };
+    (request[9], id)
 }
 
 fn first_state(frames: &[Vec<u8>]) -> Result<Option<AcState>> {
@@ -300,6 +346,46 @@ mod tests {
         assert!(state.power);
         assert_eq!(state.target, 21.0);
         assert_eq!(state.outdoor, Some(28.5));
+        server.await.unwrap();
+    }
+
+    /// A state frame re-labelled as an unsolicited report (type 0x04) showing 25 °C.
+    fn stale_report() -> Vec<u8> {
+        let mut f = hex::decode(STATE_FRAME).unwrap();
+        f[9] = 0x04;
+        f[12] = (f[12] & 0xF0) | 9; // 16 + 9 = 25 °C
+        let n = f.len();
+        f[n - 2] = packet::crc8(&f[10..n - 2]);
+        f[n - 1] = packet::checksum(&f[1..n - 1]);
+        f
+    }
+
+    #[tokio::test]
+    async fn unsolicited_reports_are_not_taken_as_replies() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            s.read(&mut buf).await.unwrap();
+            let session = [0x22u8; 32];
+            let mut resp = vec![0x83, 0x70, 0x00, 0x40, 0x20, 0x01, 0x00, 0x00];
+            resp.extend_from_slice(&cbc_encrypt(&KEY, &session));
+            resp.extend_from_slice(&sha256(&session));
+            s.write_all(&resp).await.unwrap();
+            let local: [u8; 32] = std::array::from_fn(|i| session[i] ^ KEY[i]);
+            let report = device_packet(&local, &packet::encode_packet(42, &stale_report()));
+
+            // A report queued before the request, and another just before the real reply.
+            s.write_all(&report).await.unwrap();
+            s.read(&mut buf).await.unwrap();
+            s.write_all(&report).await.unwrap();
+            let reply = packet::encode_packet(42, &hex::decode(STATE_FRAME).unwrap());
+            s.write_all(&device_packet(&local, &reply)).await.unwrap();
+        });
+
+        let mut client = LanClient::new(DeviceConfig { ip: "127.0.0.1".into(), port, id: 42, auth: Some((vec![0xAB; 64], KEY)) });
+        assert_eq!(client.query_state().await.unwrap().target, 21.0);
         server.await.unwrap();
     }
 
