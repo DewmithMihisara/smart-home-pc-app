@@ -10,15 +10,27 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "AC Remote",
-        "width": 800,
-        "height": 600
+        "width": 340,
+        "height": 480,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
