@@ -1,3 +1,33 @@
+:root {
+  --bg: rgba(20, 22, 28, 0.94);
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-2: rgba(255, 255, 255, 0.1);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #f2f4f8;
+  --muted: #8b92a3;
+  --accent: #4cc9f0;
+  --accent-2: #4361ee;
+  --on-accent: #06121c;
+  --radius: 18px;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: rgba(248, 249, 252, 0.96);
+    --surface: rgba(15, 20, 35, 0.05);
+    --surface-2: rgba(15, 20, 35, 0.09);
+    --border: rgba(15, 20, 35, 0.08);
+    --text: #141821;
+    --muted: #6a7182;
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
 html,
 body,
 #root {
@@ -5,14 +35,307 @@ body,
   height: 100%;
   background: transparent;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
+body {
+  font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+}
+
+/* ---------- panel ---------- */
+
 .panel {
-  box-sizing: border-box;
-  height: 100%;
-  border-radius: 16px;
-  background: #16181d;
-  color: #f2f4f8;
-  font-family: system-ui, sans-serif;
-  padding: 16px;
+  height: calc(100% - 12px);
+  margin: 6px;
+  padding: 16px 16px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%), var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: background 0.4s;
+}
+
+.mode-cool { --accent: #4cc9f0; --accent-2: #4361ee; }
+.mode-heat { --accent: #ffb347; --accent-2: #ff5e3a; }
+.mode-dry  { --accent: #2ee6b6; --accent-2: #12a39a; }
+.mode-fan  { --accent: #b8c4d6; --accent-2: #7b8aa3; }
+.mode-auto { --accent: #c77dff; --accent-2: #7b2ff7; }
+.panel.is-off { --accent: #6b7280; --accent-2: #4b5563; }
+
+/* ---------- header ---------- */
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.name {
+  font-weight: 600;
+  font-size: 14px;
+}
+.sub {
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: capitalize;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.dot-online { background: #34d399; box-shadow: 0 0 8px #34d399; }
+.dot-offline { background: #f87171; }
+.dot-connecting { background: #fbbf24; animation: pulse 1.2s infinite; }
+
+@keyframes pulse {
+  50% { opacity: 0.3; }
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  transition: background 0.2s, color 0.2s;
+}
+.icon-btn:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.power {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--muted);
+  transition: all 0.25s;
+}
+.power.is-on {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.power:active {
+  transform: scale(0.92);
+}
+
+/* ---------- dial ---------- */
+
+.dial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: -4px;
+}
+.dial-face {
+  position: relative;
+  width: 196px;
+  height: 180px;
+}
+.dial-face svg {
+  position: absolute;
+  inset: 0;
+}
+.dial-track,
+.dial-value {
+  fill: none;
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+.dial-track {
+  stroke: var(--surface-2);
+}
+.dial-value {
+  transition: stroke-dasharray 0.35s ease;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 50%, transparent));
+}
+.dial-readout {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-top: 12px;
+}
+.dial-temp {
+  font-size: 54px;
+  font-weight: 300;
+  letter-spacing: -2px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.dial-frac {
+  font-size: 26px;
+  letter-spacing: 0;
+}
+.dial-unit {
+  font-size: 16px;
+  color: var(--muted);
+  margin-left: 2px;
+  letter-spacing: 0;
+  vertical-align: top;
+}
+.dial-label {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.dial.is-off .dial-temp {
+  opacity: 0.4;
+}
+.dial-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: background 0.2s, transform 0.1s;
+}
+.dial-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.dial-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.dial-btn:disabled {
+  opacity: 0.35;
+}
+
+.climate {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: -10px;
+}
+.climate span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ---------- segmented ---------- */
+
+.group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 6px 2px;
+}
+.seg {
+  position: relative;
+  display: flex;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--surface);
+}
+.seg-thumb {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  transition: transform 0.28s cubic-bezier(0.3, 0.7, 0.3, 1);
+}
+.seg[aria-disabled="true"] .seg-thumb {
+  opacity: 0.3;
+}
+.seg-item {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  transition: color 0.2s;
+}
+.seg-item svg {
+  width: 16px;
+  height: 16px;
+}
+.seg-item.is-active {
+  color: #fff;
+  font-weight: 600;
+}
+.seg-item:hover:not(:disabled):not(.is-active) {
+  color: var(--text);
+}
+
+/* ---------- chips ---------- */
+
+.chips {
+  display: flex;
+  gap: 8px;
+}
+.chip {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 0;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.chip svg {
+  width: 15px;
+  height: 15px;
+}
+.chip.is-active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.chip.is-active svg {
+  color: var(--accent);
+}
+.chip:disabled {
+  opacity: 0.45;
 }
