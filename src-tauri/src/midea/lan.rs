@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout, Instant};
 
-use super::ac::{self, AcState};
+use super::ac::{self, AcState, Capabilities};
 use super::packet::{self, derive_local_key, take_v3_packets, V3Codec, V3Message};
 use super::{protocol, Error, Result};
 
@@ -52,6 +52,36 @@ impl LanClient {
     pub async fn set_state(&mut self, state: &AcState) -> Result<Option<AcState>> {
         let frames = self.request(&ac::set_state(state, true)).await?;
         first_state(&frames)
+    }
+
+    /// Ask the device what it supports (one or two 0xB5 round trips).
+    pub async fn query_capabilities(&mut self) -> Result<Capabilities> {
+        let mut caps = Capabilities { ieco_number: 1, ..Default::default() };
+        let mut got_any = false;
+        for additional in [false, true] {
+            let frames = self.request(&ac::query_capabilities(additional)).await?;
+            let mut more = false;
+            for f in &frames {
+                if let Ok(Some(m)) = ac::parse_capabilities(f, &mut caps) {
+                    got_any = true;
+                    more = m;
+                }
+            }
+            if !more {
+                break;
+            }
+        }
+        Ok(if got_any { caps } else { Capabilities::basic() })
+    }
+
+    pub async fn query_properties(&mut self, ids: &[u16]) -> Result<Vec<(u16, Vec<u8>)>> {
+        let frames = self.request(&ac::query_properties(ids)).await?;
+        Ok(frames.iter().filter_map(|f| ac::parse_properties(f).ok().flatten()).flatten().collect())
+    }
+
+    pub async fn set_properties(&mut self, props: &[(u16, Vec<u8>)]) -> Result<Vec<(u16, Vec<u8>)>> {
+        let frames = self.request(&ac::set_properties(props)).await?;
+        Ok(frames.iter().filter_map(|f| ac::parse_properties(f).ok().flatten()).flatten().collect())
     }
 
     /// Send a frame and collect the response frames. Reconnects once on a stale connection.

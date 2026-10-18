@@ -1,26 +1,20 @@
-import type { ReactNode } from "react";
-
-export interface Option<T extends string> {
+export interface Option<T extends string | number> {
   value: T;
   label: string;
-  icon?: ReactNode;
 }
 
-interface Props<T extends string> {
+interface Props<T extends string | number> {
   options: Option<T>[];
-  value: T;
+  /** `null` = nothing selected. */
+  value: T | null;
   disabled?: boolean;
+  label?: string;
   onChange: (v: T) => void;
 }
 
-export function Segmented<T extends string>({ options, value, disabled, onChange }: Props<T>) {
-  const idx = Math.max(0, options.findIndex((o) => o.value === value));
+export function Segmented<T extends string | number>({ options, value, disabled, label, onChange }: Props<T>) {
   return (
-    <div className="seg" role="radiogroup" aria-disabled={disabled}>
-      <div
-        className="seg-thumb"
-        style={{ width: `calc((100% - 8px) / ${options.length})`, transform: `translateX(${idx * 100}%)` }}
-      />
+    <div className="seg" role="radiogroup" aria-label={label} aria-disabled={disabled}>
       {options.map((o) => (
         <button
           key={o.value}
@@ -29,10 +23,8 @@ export function Segmented<T extends string>({ options, value, disabled, onChange
           className={`seg-item ${o.value === value ? "is-active" : ""}`}
           disabled={disabled}
           onClick={() => onChange(o.value)}
-          title={o.label}
         >
-          {o.icon}
-          <span>{o.label}</span>
+          {o.label}
         </button>
       ))}
     </div>

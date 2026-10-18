@@ -1,19 +1,36 @@
 export type Mode = "auto" | "cool" | "dry" | "heat" | "fan";
 export type FanSpeed = "auto" | "low" | "medium" | "high";
 
+export interface Capabilities {
+  swingVertical: boolean;
+  swingHorizontal: boolean;
+  vaneVertical: boolean;
+  vaneHorizontal: boolean;
+  ieco: boolean;
+  eco: boolean;
+  turbo: boolean;
+}
+
 export interface AcState {
   power: boolean;
   mode: Mode;
   target: number; // °C, 16–30 in 0.5 steps
   fan: FanSpeed;
-  swing: boolean;
+  swingV: boolean; // up/down swing
+  swingH: boolean; // left/right swing
+  vaneV: number; // fixed louver position 1–5, 0 = not set
+  vaneH: number;
+  ai: boolean; // AI ECO
   eco: boolean;
   turbo: boolean;
   indoor: number | null;
   outdoor: number | null;
+  caps: Capabilities;
 }
 
-export type AcPatch = Partial<Pick<AcState, "power" | "mode" | "target" | "fan" | "swing" | "eco" | "turbo">>;
+export type AcPatch = Partial<
+  Pick<AcState, "power" | "mode" | "target" | "fan" | "swingV" | "swingH" | "vaneV" | "vaneH" | "ai" | "eco" | "turbo">
+>;
 
 export type Connection = "connecting" | "online" | "offline" | "unconfigured";
 

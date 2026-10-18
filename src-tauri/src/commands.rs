@@ -10,7 +10,7 @@ use crate::midea::cloud::resolve_token;
 use crate::midea::discover::{discover, DeviceInfo};
 use crate::midea::lan::{DeviceConfig, LanClient};
 use crate::midea::{Error, Result};
-use crate::state::{self, Config, SavedDevice};
+use crate::state::{self, Config, SavedDevice, Snapshot};
 
 #[tauri::command]
 pub async fn discover_devices(ip: Option<String>) -> Result<Vec<DeviceInfo>> {
@@ -72,12 +72,12 @@ pub fn get_config(app: AppHandle) -> Config {
 }
 
 #[tauri::command]
-pub async fn get_state(app: AppHandle) -> Result<AcState> {
+pub async fn get_state(app: AppHandle) -> Result<Snapshot> {
     state::refresh(&app).await
 }
 
 #[tauri::command]
-pub async fn set_state(app: AppHandle, patch: AcPatch) -> Result<AcState> {
+pub async fn set_state(app: AppHandle, patch: AcPatch) -> Result<Snapshot> {
     state::apply(&app, patch).await
 }
 

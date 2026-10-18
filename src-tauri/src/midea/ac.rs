@@ -11,6 +11,7 @@ const CONTROL_SOURCE_APP: u8 = 0x02;
 const RESPONSE_STATE: u8 = 0xC0;
 const TEMP_INDOOR: u8 = 0x02;
 const SWING_VERTICAL: u8 = 0x0C;
+const SWING_HORIZONTAL: u8 = 0x03;
 
 pub const MIN_TEMP: f64 = 16.0;
 pub const MAX_TEMP: f64 = 30.0;
@@ -94,12 +95,21 @@ struct Extras {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcState {
     pub power: bool,
     pub mode: Mode,
     pub target: f64,
     pub fan: FanSpeed,
-    pub swing: bool,
+    /// Up/down swing.
+    pub swing_v: bool,
+    /// Left/right swing.
+    pub swing_h: bool,
+    /// Fixed louver position 1–5 (0 = not set), filled from properties.
+    pub vane_v: u8,
+    pub vane_h: u8,
+    /// "AI ECO" (iECO).
+    pub ai: bool,
     pub eco: bool,
     pub turbo: bool,
     pub indoor: Option<f64>,
@@ -110,12 +120,17 @@ pub struct AcState {
 
 /// A partial update coming from the UI.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcPatch {
     pub power: Option<bool>,
     pub mode: Option<Mode>,
     pub target: Option<f64>,
     pub fan: Option<FanSpeed>,
-    pub swing: Option<bool>,
+    pub swing_v: Option<bool>,
+    pub swing_h: Option<bool>,
+    pub vane_v: Option<u8>,
+    pub vane_h: Option<u8>,
+    pub ai: Option<bool>,
     pub eco: Option<bool>,
     pub turbo: Option<bool>,
 }
@@ -135,9 +150,24 @@ impl AcState {
             self.fan = v;
             self.extras.fan_raw = v.to_raw();
         }
-        if let Some(v) = p.swing {
-            self.swing = v;
-            self.extras.swing_raw = if v { SWING_VERTICAL } else { 0 };
+        if let Some(v) = p.swing_v {
+            self.swing_v = v;
+        }
+        if let Some(v) = p.swing_h {
+            self.swing_h = v;
+        }
+        if p.swing_v.is_some() || p.swing_h.is_some() {
+            self.extras.swing_raw =
+                if self.swing_v { SWING_VERTICAL } else { 0 } | if self.swing_h { SWING_HORIZONTAL } else { 0 };
+        }
+        if let Some(v) = p.vane_v {
+            self.vane_v = v.min(5);
+        }
+        if let Some(v) = p.vane_h {
+            self.vane_h = v.min(5);
+        }
+        if let Some(v) = p.ai {
+            self.ai = v;
         }
         if let Some(v) = p.eco {
             self.eco = v;
@@ -240,7 +270,11 @@ pub fn parse_state(frame: &[u8]) -> Result<Option<AcState>> {
         mode: Mode::from_raw((p[2] >> 5) & 0x7),
         target,
         fan: FanSpeed::from_raw(fan_raw),
-        swing: swing_raw != 0,
+        swing_v: swing_raw & SWING_VERTICAL != 0,
+        swing_h: swing_raw & SWING_HORIZONTAL != 0,
+        vane_v: 0,
+        vane_h: 0,
+        ai: false,
         eco: p[9] & 0x10 != 0,
         turbo: p[8] & 0x20 != 0 || p[10] & 0x02 != 0,
         indoor: parse_temperature(p[11], (p[15] & 0xF) as f64 / 10.0, fahrenheit),
@@ -273,6 +307,208 @@ fn parse_temperature(data: u8, decimals: f64, fahrenheit: bool) -> Option<f64> {
         return Some(t.trunc() + sign * 0.5);
     }
     Some(t)
+}
+
+// ---------------------------------------------------------------- capabilities & properties
+
+const RESPONSE_CAPABILITIES: u8 = 0xB5;
+const RESPONSE_PROPERTIES_ACK: u8 = 0xB0;
+const RESPONSE_PROPERTIES: u8 = 0xB1;
+
+pub const PROP_VANE_VERTICAL: u16 = 0x0009; // up/down louver angle
+pub const PROP_VANE_HORIZONTAL: u16 = 0x000A; // left/right louver angle
+pub const PROP_IECO: u16 = 0x00E3; // "AI ECO"
+
+const CAP_VANE_VERTICAL: u16 = 0x0009;
+const CAP_VANE_HORIZONTAL: u16 = 0x000A;
+const CAP_IECO: u16 = 0x00E3;
+const CAP_SWING_MODES: u16 = 0x0215;
+const CAP_ECO: u16 = 0x0212;
+const CAP_TURBO: u16 = 0x021A;
+
+pub fn query_capabilities(additional: bool) -> Vec<u8> {
+    if additional {
+        command(FRAME_QUERY, &[0xB5, 0x01, 0x01, 0x01])
+    } else {
+        command(FRAME_QUERY, &[0xB5, 0x01, 0x00])
+    }
+}
+
+pub fn query_properties(ids: &[u16]) -> Vec<u8> {
+    let mut body = vec![0xB1, ids.len() as u8];
+    for id in ids {
+        body.extend_from_slice(&id.to_le_bytes());
+    }
+    command(FRAME_QUERY, &body)
+}
+
+pub fn set_properties(props: &[(u16, Vec<u8>)]) -> Vec<u8> {
+    let mut body = vec![0xB0, props.len() as u8];
+    for (id, value) in props {
+        body.extend_from_slice(&id.to_le_bytes());
+        body.push(value.len() as u8);
+        body.extend_from_slice(value);
+    }
+    command(FRAME_CONTROL, &body)
+}
+
+/// What the model supports, from its 0xB5 capability report(s).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    pub swing_vertical: bool,
+    pub swing_horizontal: bool,
+    pub vane_vertical: bool,
+    pub vane_horizontal: bool,
+    pub ieco: bool,
+    pub eco: bool,
+    pub turbo: bool,
+    #[serde(skip)]
+    pub ieco_number: u8,
+    /// Raw `id → value` pairs, kept for diagnostics.
+    #[serde(skip)]
+    pub raw: Vec<(u16, Vec<u8>)>,
+}
+
+impl Capabilities {
+    /// Fallback for devices that don't answer the capability query.
+    pub fn basic() -> Self {
+        Self { swing_vertical: true, eco: true, turbo: true, ieco_number: 1, ..Default::default() }
+    }
+
+    fn add(&mut self, id: u16, v: &[u8]) {
+        let first = v.first().copied().unwrap_or(0);
+        match id {
+            CAP_SWING_MODES => {
+                self.swing_horizontal = matches!(first, 1 | 3);
+                self.swing_vertical = matches!(first, 0 | 1);
+            }
+            CAP_ECO => self.eco = matches!(first, 1 | 2),
+            CAP_TURBO => self.turbo = matches!(first, 0 | 1 | 3),
+            CAP_VANE_VERTICAL => self.vane_vertical = first == 1,
+            CAP_VANE_HORIZONTAL => self.vane_horizontal = first == 1,
+            CAP_IECO => {
+                let end = v.get(1).copied().unwrap_or(0);
+                self.ieco = matches!(first, 1 | 3 | 4 | 8) || matches!(end, 1 | 2 | 3 | 8);
+                self.ieco_number = match end {
+                    8 => 8,
+                    1..=3 => 3,
+                    _ => 1,
+                };
+            }
+            _ => {}
+        }
+        self.raw.push((id, v.to_vec()));
+    }
+}
+
+/// Parse a capability report into `caps`. Returns `Some(more)` where `more` says a second
+/// ("additional") query is needed, or `None` if the frame isn't a capability report.
+pub fn parse_capabilities(frame: &[u8], caps: &mut Capabilities) -> Result<Option<bool>> {
+    validate_frame(frame, DEVICE_TYPE_AC)?;
+    if frame.len() < 13 || frame[10] != RESPONSE_CAPABILITIES || frame[9] != FRAME_QUERY {
+        return Ok(None);
+    }
+    let p = &frame[10..frame.len() - 2];
+    let count = p[1];
+    let mut rest = &p[2..];
+    for _ in 0..count {
+        if rest.len() < 3 {
+            break;
+        }
+        let id = u16::from_le_bytes([rest[0], rest[1]]);
+        let size = rest[2] as usize;
+        let value = rest.get(3..3 + size).unwrap_or(&[]);
+        if size > 0 {
+            caps.add(id, value);
+        }
+        rest = rest.get(3 + size..).unwrap_or(&[]);
+    }
+    Ok(Some(rest.len() > 1 && rest[rest.len() - 2] != 0))
+}
+
+/// Louver positions 1–5 map to these raw angles; 0 means "not set".
+const VANE_ANGLES: [u8; 6] = [0, 1, 25, 50, 75, 100];
+
+fn vane_from_raw(raw: u8) -> u8 {
+    if raw == 0 {
+        return 0;
+    }
+    (1..=5).min_by_key(|&i| VANE_ANGLES[i].abs_diff(raw)).unwrap_or(0) as u8
+}
+
+impl AcPatch {
+    /// Fields carried by the full set-state (0x40) command.
+    pub fn touches_state(&self) -> bool {
+        self.power.is_some()
+            || self.mode.is_some()
+            || self.target.is_some()
+            || self.fan.is_some()
+            || self.swing_v.is_some()
+            || self.swing_h.is_some()
+            || self.eco.is_some()
+            || self.turbo.is_some()
+    }
+
+    /// Fields sent as properties (0xB0), restricted to what the device supports.
+    pub fn properties(&self, caps: &Capabilities) -> Vec<(u16, Vec<u8>)> {
+        let mut out = Vec::new();
+        if let Some(v) = self.vane_v.filter(|&v| v > 0 && caps.vane_vertical) {
+            out.push((PROP_VANE_VERTICAL, vec![VANE_ANGLES[v.min(5) as usize]]));
+        }
+        if let Some(v) = self.vane_h.filter(|&v| v > 0 && caps.vane_horizontal) {
+            out.push((PROP_VANE_HORIZONTAL, vec![VANE_ANGLES[v.min(5) as usize]]));
+        }
+        if let Some(on) = self.ai.filter(|_| caps.ieco) {
+            let mut v = vec![0, caps.ieco_number.max(1), on as u8];
+            v.extend_from_slice(&[0; 10]);
+            out.push((PROP_IECO, v));
+        }
+        out
+    }
+}
+
+impl AcState {
+    /// Merge values from a properties response.
+    pub fn update_properties(&mut self, props: &[(u16, Vec<u8>)]) {
+        for (id, v) in props {
+            match (*id, v.as_slice()) {
+                (PROP_VANE_VERTICAL, [raw, ..]) => self.vane_v = vane_from_raw(*raw),
+                (PROP_VANE_HORIZONTAL, [raw, ..]) => self.vane_h = vane_from_raw(*raw),
+                (PROP_IECO, [_, on, ..]) => self.ai = *on != 0,
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Parse a properties response/ack into `id → value` pairs.
+pub fn parse_properties(frame: &[u8]) -> Result<Option<Vec<(u16, Vec<u8>)>>> {
+    validate_frame(frame, DEVICE_TYPE_AC)?;
+    if frame.len() < 13 || !matches!(frame[10], RESPONSE_PROPERTIES | RESPONSE_PROPERTIES_ACK) {
+        return Ok(None);
+    }
+    let p = &frame[10..frame.len() - 2];
+    let count = p[1];
+    let mut rest = &p[2..];
+    let mut out = Vec::new();
+    for _ in 0..count {
+        if rest.len() < 4 {
+            break;
+        }
+        let id = u16::from_le_bytes([rest[0], rest[1]]);
+        let failed = rest[2] & 0x10 != 0;
+        let size = rest[3] as usize;
+        if size > 0 && !failed {
+            if let Some(v) = rest.get(4..4 + size) {
+                out.push((id, v.to_vec()));
+            }
+        } else if failed {
+            log::warn!("device rejected property 0x{id:04X}");
+        }
+        rest = rest.get(4 + size..).unwrap_or(&[]);
+    }
+    Ok(Some(out))
 }
 
 #[cfg(test)]
@@ -315,7 +551,7 @@ mod tests {
     #[test]
     fn set_state_roundtrips_through_parser_fields() {
         let mut s = parse_state(&h("aa23ac00000000000303c00145660000003c0010045c6b20000000000000000000020d79")).unwrap().unwrap();
-        s.apply(&AcPatch { target: Some(24.5), mode: Some(Mode::Heat), fan: Some(FanSpeed::Low), swing: Some(true), eco: Some(true), ..Default::default() });
+        s.apply(&AcPatch { target: Some(24.5), mode: Some(Mode::Heat), fan: Some(FanSpeed::Low), swing_v: Some(true), eco: Some(true), ..Default::default() });
         let f = set_state(&s, true);
         validate_frame(&f, DEVICE_TYPE_AC).unwrap();
         let b = &f[10..];
@@ -331,5 +567,67 @@ mod tests {
     fn non_state_frames_are_ignored() {
         let f = command(FRAME_QUERY, &[0xB5, 0x01, 0x00]);
         assert!(parse_state(&f).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+
+    fn caps() -> Capabilities {
+        let mut c = Capabilities::default();
+        // Values reported by the user's Midea Xtreme Plus.
+        c.add(CAP_SWING_MODES, &[0x01]);
+        c.add(CAP_VANE_VERTICAL, &[0x01]);
+        c.add(CAP_VANE_HORIZONTAL, &[0x01]);
+        c.add(CAP_IECO, &[0x08, 0x08]);
+        c.add(CAP_ECO, &[0x00]);
+        c.add(CAP_TURBO, &[0x01]);
+        c
+    }
+
+    #[test]
+    fn capabilities_decode() {
+        let c = caps();
+        assert!(c.swing_vertical && c.swing_horizontal && c.vane_vertical && c.vane_horizontal && c.ieco);
+        assert_eq!(c.ieco_number, 8);
+        assert!(!c.eco && c.turbo);
+    }
+
+    #[test]
+    fn property_encoding() {
+        let p = AcPatch { vane_v: Some(3), ai: Some(true), ..Default::default() };
+        let props = p.properties(&caps());
+        assert_eq!(props[0], (PROP_VANE_VERTICAL, vec![50]));
+        assert_eq!(&props[1].1[..3], &[0, 8, 1]);
+        assert_eq!(props[1].1.len(), 13);
+        assert!(!p.touches_state());
+        let frame = set_properties(&props);
+        validate_frame(&frame, DEVICE_TYPE_AC).unwrap();
+        assert_eq!(&frame[10..15], &[0xB0, 2, 0x09, 0x00, 1]);
+    }
+
+    #[test]
+    fn properties_roundtrip_into_state() {
+        // B1 response: count 3, (id, result, size, data)...
+        let body = [0xB1, 3, 0x09, 0x00, 0x00, 1, 75, 0x0A, 0x00, 0x00, 1, 0, 0xE3, 0x00, 0x00, 2, 8, 1];
+        let mut payload = body.to_vec();
+        payload.push(0x01); // message id
+        payload.push(crc8(&payload));
+        let frame = build_frame(DEVICE_TYPE_AC, FRAME_QUERY, &payload);
+        let props = parse_properties(&frame).unwrap().unwrap();
+        let mut s = parse_state(&hex::decode("aa23ac00000000000303c00145660000003c0010045c6b20000000000000000000020d79").unwrap()).unwrap().unwrap();
+        s.update_properties(&props);
+        assert_eq!((s.vane_v, s.vane_h, s.ai), (4, 0, true));
+    }
+
+    #[test]
+    fn swing_axes() {
+        let mut s = parse_state(&hex::decode("aa23ac00000000000303c00145660000003c0010045c6b20000000000000000000020d79").unwrap()).unwrap().unwrap();
+        assert!(s.swing_v && !s.swing_h); // fixture has up/down swing on
+        s.apply(&AcPatch { swing_v: Some(false), swing_h: Some(true), ..Default::default() });
+        assert_eq!(set_state(&s, false)[10 + 7], 0x30 | 0x03);
+        s.apply(&AcPatch { swing_v: Some(true), ..Default::default() });
+        assert_eq!(set_state(&s, false)[10 + 7], 0x30 | 0x0F);
     }
 }

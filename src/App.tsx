@@ -4,48 +4,36 @@ import * as api from "./api";
 import type { AcPatch, AcState, Config, Connection, FanSpeed, Mode } from "./types";
 import { TempDial } from "./components/TempDial";
 import { Segmented, type Option } from "./components/Segmented";
+import { Airflow } from "./components/Airflow";
 import { Setup } from "./components/Setup";
 import { Settings } from "./components/Settings";
-import {
-  AutoIcon,
-  BoltIcon,
-  CloudIcon,
-  DropIcon,
-  FanIcon,
-  GearIcon,
-  HomeIcon,
-  LeafIcon,
-  PowerIcon,
-  SnowIcon,
-  SunIcon,
-  SwingIcon,
-} from "./components/Icons";
+import { PowerIcon, SettingsIcon } from "./components/Icons";
 import "./App.css";
 
 const MODES: Option<Mode>[] = [
-  { value: "auto", label: "Auto", icon: <AutoIcon /> },
-  { value: "cool", label: "Cool", icon: <SnowIcon /> },
-  { value: "dry", label: "Dry", icon: <DropIcon /> },
-  { value: "heat", label: "Heat", icon: <SunIcon /> },
-  { value: "fan", label: "Fan", icon: <FanIcon /> },
+  { value: "auto", label: "Auto" },
+  { value: "cool", label: "Cool" },
+  { value: "dry", label: "Dry" },
+  { value: "heat", label: "Heat" },
+  { value: "fan", label: "Fan" },
 ];
 
 const FANS: Option<FanSpeed>[] = [
   { value: "auto", label: "Auto" },
   { value: "low", label: "Low" },
-  { value: "medium", label: "Med" },
+  { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
 ];
 
-const MODE_LABEL: Record<Mode, string> = {
+const MODE_CAPTION: Record<Mode, string> = {
   auto: "Auto",
-  cool: "Cooling to",
-  dry: "Drying at",
-  heat: "Heating to",
+  cool: "Cooling",
+  dry: "Dry",
+  heat: "Heating",
   fan: "Fan only",
 };
 
-/** Batch rapid changes (e.g. several +/- clicks) into one command. */
+/** Batch rapid changes (e.g. scrolling the dial) into one command. */
 const SEND_DELAY = 350;
 /** Ignore polled state for a moment after a local change so the UI doesn't jump back. */
 const QUIET_AFTER_CHANGE = 2500;
@@ -156,6 +144,7 @@ function App() {
         onDone={async () => {
           await loadConfig();
           setView("main");
+          refresh();
         }}
       />
     );
@@ -178,46 +167,41 @@ function App() {
 
   const on = !!ac?.power;
   const mode = ac?.mode ?? "cool";
+  const caps = ac?.caps;
   const active = config.devices.find((d) => d.id === config.active) ?? config.devices[0];
   const ready = conn === "online" && !!ac;
-  const status = conn === "online" ? (on ? "Running" : "Standby") : conn === "offline" ? "Can't reach AC" : "Connecting…";
+  const live = ready && on;
+  const status = conn === "online" ? (on ? MODE_CAPTION[mode] : "Off") : conn === "offline" ? "Unreachable" : "Connecting";
+  const room = [ac?.indoor != null && `Room ${fmt(ac.indoor)}`, ac?.outdoor != null && `Outside ${fmt(ac.outdoor)}`].filter(Boolean).join("  ·  ");
 
   return (
-    <main className={`panel mode-${mode} ${on ? "" : "is-off"}`}>
+    <main className={`panel mode-${mode} ${on ? "is-on" : "is-off"}`}>
       <header className="head">
         <div className="title">
-          <span className={`dot dot-${conn}`} />
-          <div>
-            {config.devices.length > 1 ? (
-              <select className="name device-select" value={active?.id} onChange={(e) => switchDevice(e.target.value)}>
-                {config.devices.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}</option>
-                ))}
-              </select>
-            ) : (
-              <div className="name">{active?.name ?? "Air conditioner"}</div>
-            )}
-            <div className="sub" title={error ?? undefined}>{status}</div>
-          </div>
+          {config.devices.length > 1 ? (
+            <select className="name device-select" value={active?.id} onChange={(e) => switchDevice(e.target.value)}>
+              {config.devices.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+          ) : (
+            <div className="name">{active?.name ?? "Air conditioner"}</div>
+          )}
+          <div className={`sub status-${conn}`} title={error ?? undefined}>{status}</div>
         </div>
         <div className="head-actions">
           <button className="icon-btn" aria-label="Settings" onClick={() => setView("settings")}>
-            <GearIcon />
+            <SettingsIcon />
           </button>
-          <button
-            className={`power ${on ? "is-on" : ""}`}
-            aria-label={on ? "Turn off" : "Turn on"}
-            disabled={!ready}
-            onClick={() => update({ power: !on })}
-          >
-            <PowerIcon width={20} height={20} />
+          <button className={`power ${on ? "is-on" : ""}`} aria-label={on ? "Turn off" : "Turn on"} disabled={!ready} onClick={() => update({ power: !on })}>
+            <PowerIcon />
           </button>
         </div>
       </header>
 
       {conn === "offline" && !ac ? (
         <div className="offline">
-          <p>Couldn't reach the air conditioner.</p>
+          <p>Can&apos;t reach the air conditioner.</p>
           <p className="hint small">{error}</p>
           <button className="secondary" onClick={() => { setConn("connecting"); refresh(); }}>Try again</button>
         </div>
@@ -225,34 +209,61 @@ function App() {
         <>
           <TempDial
             value={ac?.target ?? 24}
-            label={!ac ? "…" : on ? MODE_LABEL[mode] : "Off"}
-            disabled={!ready || !on || mode === "fan"}
+            caption={room || " "}
+            disabled={!live || mode === "fan"}
             onChange={(target) => update({ target })}
           />
 
-          <section className="climate">
-            <span>
-              <HomeIcon width={14} height={14} /> Indoor {fmt(ac?.indoor ?? null)}
-            </span>
-            <span>
-              <CloudIcon width={14} height={14} /> Outdoor {fmt(ac?.outdoor ?? null)}
-            </span>
-          </section>
-
           <section className="group">
             <div className="group-label">Mode</div>
-            <Segmented options={MODES} value={mode} disabled={!ready || !on} onChange={(m) => update({ mode: m })} />
+            <Segmented label="Mode" options={MODES} value={ac ? mode : null} disabled={!live} onChange={(m) => update({ mode: m })} />
           </section>
 
           <section className="group">
             <div className="group-label">Fan</div>
-            <Segmented options={FANS} value={ac?.fan ?? "auto"} disabled={!ready || !on} onChange={(fan) => update({ fan })} />
+            <Segmented label="Fan" options={FANS} value={ac?.fan ?? null} disabled={!live} onChange={(fan) => update({ fan })} />
           </section>
 
-          <section className="chips">
-            <Chip icon={<SwingIcon />} label="Swing" active={!!ac?.swing} disabled={!ready || !on} onClick={() => update({ swing: !ac?.swing })} />
-            <Chip icon={<LeafIcon />} label="Eco" active={!!ac?.eco} disabled={!ready || !on} onClick={() => update({ eco: !ac?.eco, turbo: false })} />
-            <Chip icon={<BoltIcon />} label="Turbo" active={!!ac?.turbo} disabled={!ready || !on} onClick={() => update({ turbo: !ac?.turbo, eco: false })} />
+          {caps && (caps.swingVertical || caps.vaneVertical || caps.swingHorizontal || caps.vaneHorizontal) && (
+            <section className="group">
+              <div className="group-label">Air direction</div>
+              {(caps.swingVertical || caps.vaneVertical) && (
+                <Airflow
+                  label="Up · down"
+                  swing={!!ac?.swingV}
+                  vane={ac?.vaneV ?? 0}
+                  canSwing={caps.swingVertical}
+                  canPosition={caps.vaneVertical}
+                  disabled={!live}
+                  onSwing={(v) => update({ swingV: v })}
+                  onPosition={(p) => update({ swingV: false, vaneV: p })}
+                />
+              )}
+              {(caps.swingHorizontal || caps.vaneHorizontal) && (
+                <Airflow
+                  label="Left · right"
+                  swing={!!ac?.swingH}
+                  vane={ac?.vaneH ?? 0}
+                  canSwing={caps.swingHorizontal}
+                  canPosition={caps.vaneHorizontal}
+                  disabled={!live}
+                  onSwing={(v) => update({ swingH: v })}
+                  onPosition={(p) => update({ swingH: false, vaneH: p })}
+                />
+              )}
+            </section>
+          )}
+
+          <section className="toggles">
+            {caps?.ieco && (
+              <Toggle label="AI Eco" on={!!ac?.ai} disabled={!live} onClick={() => update({ ai: !ac?.ai, turbo: false })} />
+            )}
+            {caps?.turbo && (
+              <Toggle label="Turbo" on={!!ac?.turbo} disabled={!live} onClick={() => update({ turbo: !ac?.turbo, ai: false, eco: false })} />
+            )}
+            {caps?.eco && (
+              <Toggle label="Eco" on={!!ac?.eco} disabled={!live} onClick={() => update({ eco: !ac?.eco, turbo: false })} />
+            )}
           </section>
         </>
       )}
@@ -260,10 +271,10 @@ function App() {
   );
 }
 
-function Chip(props: { icon: React.ReactNode; label: string; active: boolean; disabled: boolean; onClick: () => void }) {
+function Toggle(props: { label: string; on: boolean; disabled: boolean; onClick: () => void }) {
   return (
-    <button className={`chip ${props.active ? "is-active" : ""}`} disabled={props.disabled} onClick={props.onClick} aria-pressed={props.active}>
-      {props.icon}
+    <button className={`toggle ${props.on ? "is-on" : ""}`} disabled={props.disabled} onClick={props.onClick} aria-pressed={props.on}>
+      <span className="toggle-dot" />
       {props.label}
     </button>
   );

@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
-use crate::midea::ac::{AcPatch, AcState};
+use crate::midea::ac::{AcPatch, AcState, Capabilities};
 use crate::midea::lan::{DeviceConfig, LanClient};
 use crate::midea::{Error, Result};
 
@@ -49,11 +49,19 @@ pub struct Config {
     active: Option<String>,
 }
 
+/// State plus what the model supports, so the UI can hide unsupported controls.
+#[derive(Clone, Serialize)]
+pub struct Snapshot {
+    #[serde(flatten)]
+    state: AcState,
+    caps: Capabilities,
+}
+
 /// Pushed to the UI on every state change or connection problem.
 #[derive(Clone, Serialize)]
 pub struct Update {
     status: &'static str, // "online" | "offline" | "unconfigured"
-    state: Option<AcState>,
+    state: Option<Snapshot>,
     error: Option<String>,
 }
 
@@ -61,6 +69,54 @@ struct Session {
     device_id: String,
     client: LanClient,
     last: Option<AcState>,
+    caps: Option<Capabilities>,
+}
+
+impl Session {
+    /// Capabilities are queried once per session.
+    async fn caps(&mut self) -> Result<Capabilities> {
+        if self.caps.is_none() {
+            let caps = self.client.query_capabilities().await.unwrap_or_else(|e| {
+                log::warn!("capability query failed: {e}");
+                Capabilities::basic()
+            });
+            self.caps = Some(caps);
+        }
+        Ok(self.caps.clone().unwrap_or_default())
+    }
+
+    /// Full state: the 0x41 status plus louver/AI properties when supported.
+    async fn read(&mut self) -> Result<AcState> {
+        let caps = self.caps().await?;
+        let mut st = self.client.query_state().await?;
+        let ids = prop_ids(&caps);
+        if !ids.is_empty() {
+            match self.client.query_properties(&ids).await {
+                Ok(props) => st.update_properties(&props),
+                Err(e) => log::warn!("property query failed: {e}"),
+            }
+        }
+        Ok(st)
+    }
+
+    fn snapshot(&self, state: AcState) -> Snapshot {
+        Snapshot { state, caps: self.caps.clone().unwrap_or_else(Capabilities::basic) }
+    }
+}
+
+fn prop_ids(caps: &Capabilities) -> Vec<u16> {
+    use crate::midea::ac::{PROP_IECO, PROP_VANE_HORIZONTAL, PROP_VANE_VERTICAL};
+    let mut ids = Vec::new();
+    if caps.vane_vertical {
+        ids.push(PROP_VANE_VERTICAL);
+    }
+    if caps.vane_horizontal {
+        ids.push(PROP_VANE_HORIZONTAL);
+    }
+    if caps.ieco {
+        ids.push(PROP_IECO);
+    }
+    ids
 }
 
 #[derive(Default)]
@@ -107,8 +163,7 @@ pub async fn add_device<R: Runtime>(app: &AppHandle<R>, dev: SavedDevice, state:
     devices.push(dev.clone());
     save_devices(app, &devices, Some(&dev.id))?;
     let client = LanClient::new(dev.config()?);
-    *app.state::<AppState>().session.lock().await = Some(Session { device_id: dev.id, client, last: Some(state.clone()) });
-    emit(app, "online", Some(state), None);
+    *app.state::<AppState>().session.lock().await = Some(Session { device_id: dev.id, client, last: Some(state), caps: None });
     Ok(())
 }
 
@@ -155,33 +210,45 @@ async fn with_session<R: Runtime, T>(
         return Err(Error::Protocol("no air conditioner configured".into()));
     };
     if guard.as_ref().is_none_or(|s| s.device_id != dev.id) {
-        *guard = Some(Session { device_id: dev.id.clone(), client: LanClient::new(dev.config()?), last: None });
+        *guard = Some(Session { device_id: dev.id.clone(), client: LanClient::new(dev.config()?), last: None, caps: None });
     }
     f(guard.as_mut().expect("session")).await
 }
 
-pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<AcState> {
+pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<Snapshot> {
     let res = with_session(app, async |s| {
-        let st = s.client.query_state().await?;
+        let st = s.read().await?;
         s.last = Some(st.clone());
-        Ok(st)
+        Ok(s.snapshot(st))
     })
     .await;
     report(app, &res);
     res
 }
 
-pub async fn apply<R: Runtime>(app: &AppHandle<R>, patch: AcPatch) -> Result<AcState> {
+pub async fn apply<R: Runtime>(app: &AppHandle<R>, patch: AcPatch) -> Result<Snapshot> {
     let res = with_session(app, async |s| {
+        let caps = s.caps().await?;
         let mut st = match s.last.clone() {
             Some(st) => st,
-            None => s.client.query_state().await?,
+            None => s.read().await?,
         };
         st.apply(&patch);
-        let reported = s.client.set_state(&st).await?;
-        let st = reported.unwrap_or(st);
+        if patch.touches_state() {
+            if let Some(reported) = s.client.set_state(&st).await? {
+                // The 0x40 reply has no louver/AI info; keep ours.
+                let (vane_v, vane_h, ai) = (st.vane_v, st.vane_h, st.ai);
+                st = reported;
+                (st.vane_v, st.vane_h, st.ai) = (vane_v, vane_h, ai);
+            }
+        }
+        let props = patch.properties(&caps);
+        if !props.is_empty() {
+            let ack = s.client.set_properties(&props).await?;
+            st.update_properties(&ack);
+        }
         s.last = Some(st.clone());
-        Ok(st)
+        Ok(s.snapshot(st))
     })
     .await;
     report(app, &res);
@@ -193,14 +260,14 @@ pub async fn toggle_power<R: Runtime>(app: &AppHandle<R>) {
     let power = match power {
         Some(p) => p,
         None => match refresh(app).await {
-            Ok(st) => st.power,
+            Ok(st) => st.state.power,
             Err(_) => return,
         },
     };
     let _ = apply(app, AcPatch { power: Some(!power), ..Default::default() }).await;
 }
 
-fn report<R: Runtime>(app: &AppHandle<R>, res: &Result<AcState>) {
+fn report<R: Runtime>(app: &AppHandle<R>, res: &Result<Snapshot>) {
     match res {
         Ok(st) => emit(app, "online", Some(st.clone()), None),
         Err(e) if active_device(app).is_none() => emit(app, "unconfigured", None, Some(e.to_string())),
@@ -208,10 +275,10 @@ fn report<R: Runtime>(app: &AppHandle<R>, res: &Result<AcState>) {
     }
 }
 
-fn emit<R: Runtime>(app: &AppHandle<R>, status: &'static str, state: Option<AcState>, error: Option<String>) {
+fn emit<R: Runtime>(app: &AppHandle<R>, status: &'static str, state: Option<Snapshot>, error: Option<String>) {
     if let Some(tray) = app.tray_by_id("tray") {
         let tip = match (&state, status) {
-            (Some(s), _) if s.power => format!(
+            (Some(Snapshot { state: s, .. }), _) if s.power => format!(
                 "AC Remote — {:?} {}°C{}",
                 s.mode,
                 s.target,
