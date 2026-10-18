@@ -4,7 +4,7 @@ use ac_remote_lib::midea::{ac, lan::{DeviceConfig, LanClient}};
 
 #[tokio::main]
 async fn main() {
-    let path = std::path::Path::new(&std::env::var("APPDATA").unwrap_or_default()).join("com.acremote.app/config.json");
+    let path = ac_remote_lib::saved_config_path();
     let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("no saved config")).unwrap();
     let filter = std::env::args().nth(1);
     for d in cfg["devices"].as_array().unwrap() {

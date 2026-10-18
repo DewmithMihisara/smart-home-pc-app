@@ -46,3 +46,16 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+/// Where the app saves its device list (used by the diagnostic examples).
+#[doc(hidden)]
+pub fn saved_config_path() -> std::path::PathBuf {
+    let base = if cfg!(target_os = "macos") {
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Library/Application Support")
+    } else if cfg!(windows) {
+        std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default())
+    } else {
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config")
+    };
+    base.join("com.acremote.app/config.json")
+}
