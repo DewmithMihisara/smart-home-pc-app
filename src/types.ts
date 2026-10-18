@@ -17,5 +17,32 @@ export type AcPatch = Partial<Pick<AcState, "power" | "mode" | "target" | "fan" 
 
 export type Connection = "connecting" | "online" | "offline" | "unconfigured";
 
+export interface Update {
+  status: Exclude<Connection, "connecting">;
+  state: AcState | null;
+  error: string | null;
+}
+
+export interface DeviceInfo {
+  ip: string;
+  port: number;
+  id: string;
+  name: string;
+  sn: string;
+  version: number;
+  device_type: number;
+}
+
+export interface DeviceSummary {
+  id: string;
+  name: string;
+  ip: string;
+}
+
+export interface Config {
+  devices: DeviceSummary[];
+  active: string | null;
+}
+
 export const MIN_TEMP = 16;
 export const MAX_TEMP = 30;

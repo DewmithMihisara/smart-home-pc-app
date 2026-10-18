@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, Runtime, WebviewWindow};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Rect, Runtime, WebviewWindow};
 
 pub const POPUP: &str = "main";
 const MARGIN: f64 = 8.0;
@@ -34,7 +34,8 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_popup(app),
             "power" => {
-                let _ = app.emit("tray-toggle-power", ());
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { crate::state::toggle_power(&app).await });
             }
             "quit" => app.exit(0),
             _ => {}
