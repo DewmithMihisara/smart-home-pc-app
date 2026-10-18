@@ -4,6 +4,7 @@
 //! (<https://github.com/mill1000/midea-msmart>, MIT).
 
 pub mod ac;
+pub mod cloud;
 pub mod discover;
 pub mod lan;
 pub mod crypto;
