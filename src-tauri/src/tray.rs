@@ -25,9 +25,14 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit AC Remote", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &power, &PredefinedMenuItem::separator(app)?, &quit])?;
 
+    // macOS menu bar wants a monochrome "template" image it can tint; elsewhere use the app icon.
+    #[cfg(target_os = "macos")]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))?;
+    #[cfg(not(target_os = "macos"))]
     let icon = app.default_window_icon().cloned().expect("app icon missing");
     TrayIconBuilder::with_id("tray")
         .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("AC Remote")
         .menu(&menu)
         .show_menu_on_left_click(false)
